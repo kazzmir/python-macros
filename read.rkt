@@ -325,6 +325,7 @@
               (loop tree (cdr skip-space))]
              [else (error 'read "unknown token ~a" current)]))])))
 
+;; empty lines end up being just the empty list, '(), so remove those
 (define (remove-empty what)
   (match what
     [(list x ...)
@@ -338,7 +339,7 @@
 
 (provide python-read)
 (define (python-read [port (current-input-port)])
-  (port-count-lines! port)
+  ; (port-count-lines! port)
   (let loop ([tree '()]
              [unparsed (python-read-port port)])
     (if (null? unparsed)
@@ -360,30 +361,30 @@
   (check-equal? 1 1)
 
   (check-equal? (python-read-string "1") 
-                '((%line 1)))
+                '((1)))
 
   (check-equal? (python-read-string "x")
-                '((%line x)))
+                '((x)))
 
   (check-equal? (python-read-string #<<HERE
 x = 5
 HERE
 )
-                '((%line x = 5)))
+                '((x = 5)))
 
 (check-equal? (python-read-string #<<HERE
 (x)
 HERE
 )
 
-                '((%line (#%parens x))))
+                '(((#%parens x))))
 
   (check-equal? (python-read-string #<<HERE
 x = [for blah(z) in burger]
 HERE
 )
 
-                '((%line x = (#%brackets for blah (#%parens z) in burger))))
+                '((x = (#%brackets for blah (#%parens z) in burger))))
 
   (check-equal? (python-read-string #<<HERE
 def foo(x):
@@ -391,8 +392,8 @@ def foo(x):
 HERE
 )
 
-                '(def foo (#%parens x) %colon
-                      (%block (%line return x + 1))))
+                '((def foo (#%parens x) %colon
+                      (%block (return x + 1)))))
 
   (check-equal? (python-read-string #<<HERE
 def foo(x):
@@ -402,9 +403,9 @@ bar(8)
 HERE
 )
 
-                '(def foo (#%parens x) %colon
-                      (%block (%line return x + 1))
-                  (%line foo (#%parens 5))
-                  (%line bar (#%parens 8))))
+                '((def foo (#%parens x) %colon
+                      (%block (return x + 1)))
+                  (foo (#%parens 5))
+                  (bar (#%parens 8))))
 
   )
