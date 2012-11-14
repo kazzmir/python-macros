@@ -152,8 +152,8 @@
       (token-identifier? token)))
 
 (define-syntax-rule (debug x ...)
-                    (printf x ...)
                     #;
+                    (printf x ...)
                     (void))
 
 (define (tokens->datum tokens)
@@ -162,6 +162,9 @@
     (cond
       [(plain-token? what) (token-value what)]
       [(token-space? what) 'space]
+      [(token-left-bracket? what) '|[|]
+      [(token-right-bracket? what) '|]|]
+      [(token-colon? what) ':]
       [(token-newline? what) 'newline]
       [(token-eof? what) 'eof]
       [else (token-value what)])))
@@ -280,14 +283,14 @@
              [(struct* position-token ([token (? token-left-bracket?)]
                                        [start-pos start]
                                        [end-pos end]))
-              (define-values (sub-tree unparsed) (parse (cdr skip-space) 'bracket 0))
+              (define-values (sub-tree unparsed) (parse (cdr skip-space) 'brackets 0))
               (loop (append tree (list `(#%brackets ,@sub-tree)))
                     unparsed)]
 
              [(struct* position-token ([token (? token-right-bracket?)]
                                        [start-pos start]
                                        [end-pos end]))
-              (when (not (eq? delimiter 'bracket))
+              (when (not (eq? delimiter 'brackets))
                 (error 'read "unexpected `]' seen"))
               (values tree (cdr skip-space))]
 
