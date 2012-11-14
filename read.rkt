@@ -78,7 +78,7 @@
     [operator (token-identifier (string->symbol lexeme))]
     ))
 
-(define (python-read [port (current-input-port)])
+(define (python-read-port port)
   (let loop ([tokens '()])
     (define next (python-lexer port))
     (match next
@@ -240,9 +240,10 @@
               (loop tree (cdr skip-space))]
              [else (error 'read "unknown token ~a" current)]))])))
 
-(define (python-read-string string)
+(provide python-read)
+(define (python-read [port (current-input-port)])
   (let loop ([tree '()]
-             [unparsed (python-read (open-input-string string))])
+             [unparsed (python-read-port port)])
     (if (null? unparsed)
       tree
       (let ()
@@ -251,6 +252,10 @@
         (debug "Parsed ~a\n" parsed)
         (loop (append tree parsed)
               rest)))))
+
+(provide python-read-string)
+(define (python-read-string string)
+  (python-read (open-input-string string)))
 
 (module+ test
   (require rackunit)
