@@ -325,13 +325,24 @@
               (loop tree (cdr skip-space))]
              [else (error 'read "unknown token ~a" current)]))])))
 
+(define (remove-empty what)
+  (match what
+    [(list x ...)
+     (reverse
+     (for/fold ([all '()])
+               ([x x])
+       (if (null? x)
+         all
+         (cons (remove-empty x) all))))]
+    [else what]))
+
 (provide python-read)
 (define (python-read [port (current-input-port)])
   (port-count-lines! port)
   (let loop ([tree '()]
              [unparsed (python-read-port port)])
     (if (null? unparsed)
-      tree
+      (remove-empty tree)
       (let ()
         (define-values (parsed rest)
                        (parse unparsed))
