@@ -4,6 +4,7 @@
 (require parser-tools/lex
          (prefix-in : parser-tools/lex-sre))
 (require racket/match
+         racket/pretty
          (for-syntax racket/base
                      syntax/parse))
 
@@ -11,6 +12,7 @@
 
 (define-empty-tokens python-empty-tokens
   [eof space tab newline
+   end-of-line-comment
    left-bracket right-bracket
    left-paren right-paren
    left-brace right-brace
@@ -35,7 +37,8 @@
                       (define-token? name) ...))
 
 (define-tokens? eof number identifier 
-                ;end-of-line-comment number string
+                end-of-line-comment
+                string
                 ;block-comment parse-error
                 left-paren right-paren
                 space tab newline
@@ -58,7 +61,33 @@
 (define-lex-abbrev tab "\t")
 (define-lex-abbrev newline "\n")
 
-(define-lex-abbrev operator (:or "=" "+"))
+(define-lex-abbrev string-character-double
+                   (:or (:: #\\ any-char)
+                        (:~ #\")))
+
+(define-lex-abbrev string-character-single
+                   (:or (:: #\\ any-char)
+                        (:~ #\')))
+
+(define-lex-abbrev string (:or (:: #\" (:* string-character-double) #\")
+                               (:: #\' (:* string-character-single) #\')))
+
+(define-lex-abbrev operator (:or "=" "+" "%" "*"))
+
+(define-lex-abbrev line-comment (:: (:or "#")
+                                    (:* (:~ "\n"))
+                                    ;; we might hit eof before a \n
+                                    (:? "\n" "\r")))
+
+(define (replace-escapes string)
+  (define replacements '([#px"\\\\n" "\n"]
+                         [#px"\\\\t" "\t"]))
+  (for/fold ([string string])  
+            ([replace replacements])
+            (define pattern (car replace))
+            (define with (cadr replace))
+            (regexp-replace* pattern string with)))
+
 
 (define python-lexer
   (lexer-src-pos
@@ -67,6 +96,13 @@
     [identifier (token-identifier (string->symbol lexeme))]
     [space (token-space)]
     [tab (token-tab)]
+    [string (let ()
+              (define raw (substring (substring lexeme 1)
+                                     0 (- (string-length lexeme) 2)))
+              (token-string (replace-escapes raw)))]
+    ["#" (token-end-of-line-comment)]
+    ["." (token-identifier '%dot)]
+    ["," (token-identifier '%comma)]
     ["[" (token-left-bracket)]
     ["]" (token-right-bracket)]
     ["(" (token-left-paren)]
@@ -78,10 +114,32 @@
     [operator (token-identifier (string->symbol lexeme))]
     ))
 
+;; returns #t if an entire comment was read (with an ending newline)
+(define (read-until-end-of-line input)
+  (define (finish? what)
+    (or (eof-object? what)
+        (= (char->integer #\newline) what)))
+  ;; #t if read a #\newline, otherwise #f
+  (define (clean-end? what)
+    (if (eof-object? what)
+      #f
+      (= (char->integer #\newline) what)))
+  (let loop ()
+    (define what (read-byte input))
+    (if (not (finish? what))
+      (loop)
+      (clean-end? what))))
+
 (define (python-read-port port)
   (let loop ([tokens '()])
     (define next (python-lexer port))
     (match next
+      [(struct* position-token ([token (? token-end-of-line-comment?)]
+                                [start-pos start]
+                                [end-pos end]))
+        (read-until-end-of-line port)
+        (loop (cons (position-token (token-newline) #f #f) tokens))]
+
       [(struct* position-token ([token (? token-eof?)]
                                 [start-pos start]
                                 [end-pos end]))
@@ -90,7 +148,23 @@
 
 (define (plain-token? token)
   (or (token-number? token)
+      (token-string? token)
       (token-identifier? token)))
+
+(define-syntax-rule (debug x ...)
+                    (printf x ...)
+                    #;
+                    (void))
+
+(define (tokens->datum tokens)
+  (for/list ([token tokens])
+    (define what (position-token-token token))
+    (cond
+      [(plain-token? what) (token-value what)]
+      [(token-space? what) 'space]
+      [(token-newline? what) 'newline]
+      [(token-eof? what) 'eof]
+      [else (token-value what)])))
 
 (define (search pass find tokens)
   (let loop ([tokens tokens])
@@ -99,23 +173,20 @@
       (let ()
         (define current (car tokens))
         (cond
-          [(find (position-token-token current)) tokens]
+          [(find (position-token-token current))
+           (debug "Found ~a at ~a\n" find (tokens->datum tokens))
+           tokens]
           [(for/fold ([ok #f])
                      ([what pass])
                      (or ok (what (position-token-token current))))
            (loop (cdr tokens))]
           [else #f])))))
 
-(define-syntax-rule (debug x ...)
-                    #;
-                    (printf x ...)
-                    (void))
-
 ;; returns a tree and an unparsed tree
 (define (parse tokens [delimiter #f] [indent-level 0])
   (let loop ([tree '()]
              [tokens tokens])
-    (debug "Parse ~a. Tree is ~a\n" (car tokens) tree)
+    (debug "Parse ~a. Tree is ~a\n" (tokens->datum tokens) tree)
     (cond
       ;; start of a line, so check the indentation level
       [(and (null? tree)
@@ -124,10 +195,12 @@
                                              (lambda (i)
                                                (not (token-space? i)))
                                              tokens))
-              (debug "Check indent new ~a old ~a for ~a\n"
-                      (- (length tokens) (length next-non-space))
-                      indent-level
-                      (car tokens))
+              (when next-non-space
+                (debug "Next non-space at ~a\n" (tokens->datum next-non-space))
+                (debug "Check indent new ~a old ~a for ~a\n"
+                       (- (length tokens) (length next-non-space))
+                       indent-level
+                       (tokens->datum tokens)))
               (and next-non-space
                    (not (= (- (length tokens) (length next-non-space))
                            indent-level)))))
@@ -183,8 +256,9 @@
                       (define new-level (- (length (cdr next-line)) (length spaces)))
                       (debug "New level ~a\n" new-level)
                       (define-values (sub-tree rest) (parse (cdr next-line) #f new-level))
-                      (values (append tree (list '%colon `(%block ,@sub-tree)))
-                              rest)
+                      (define-values (lines more) (parse rest #f indent-level))
+                      (define this (append tree (list '%colon `(%block ,@sub-tree))))
+                      (values (append (list this) lines) more)
                       #;
                       (loop (append tree (list '%colon `(%block ,@sub-tree)))
                             rest)))))]
@@ -192,7 +266,7 @@
              [(struct* position-token ([token (? token-left-paren?)]
                                        [start-pos start]
                                        [end-pos end]))
-              (define-values (sub-tree unparsed) (parse (cdr skip-space) 'parens indent-level))
+              (define-values (sub-tree unparsed) (parse (cdr skip-space) 'parens 0))
               (loop (append tree (list `(#%parens ,@sub-tree)))
                     unparsed)]
 
@@ -206,7 +280,7 @@
              [(struct* position-token ([token (? token-left-bracket?)]
                                        [start-pos start]
                                        [end-pos end]))
-              (define-values (sub-tree unparsed) (parse (cdr skip-space) 'bracket indent-level))
+              (define-values (sub-tree unparsed) (parse (cdr skip-space) 'bracket 0))
               (loop (append tree (list `(#%brackets ,@sub-tree)))
                     unparsed)]
 
@@ -227,6 +301,14 @@
                                                   (? token-eof?))]
                                        [start-pos start]
                                        [end-pos end]))
+              ; (define this-line `(%line ,@tree))
+              (define this-line tree)
+              (define-values (lines more)
+                             (parse (cdr skip-space)
+                                    #f indent-level))
+              (values (append (list this-line) lines)
+                      more)
+              #;
               (values (list `(%line ,@tree)) (cdr skip-space))
               #;
               (define-values (sub-tree more) (parse (cdr skip-space) delimiter indent-level))
@@ -242,6 +324,7 @@
 
 (provide python-read)
 (define (python-read [port (current-input-port)])
+  (port-count-lines! port)
   (let loop ([tree '()]
              [unparsed (python-read-port port)])
     (if (null? unparsed)
@@ -249,7 +332,7 @@
       (let ()
         (define-values (parsed rest)
                        (parse unparsed))
-        (debug "Parsed ~a\n" parsed)
+        (debug "Parsed ~a\n" (pretty-format parsed))
         (loop (append tree parsed)
               rest)))))
 

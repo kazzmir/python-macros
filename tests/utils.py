@@ -1,8 +1,6 @@
 def can_exec(path):
     import os
-    return os.path.exists(path) and\
-           os.path.isfile(path) and\
-           os.access(path, os.X_OK)
+    return os.path.exists(path) and os.path.isfile(path) and os.access(path, os.X_OK)
 
 def find_executable(name, default_path, extra_dirs = [], where = '.'):
     import os
