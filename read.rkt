@@ -58,7 +58,7 @@
 (define-lex-abbrev tab "\t")
 (define-lex-abbrev newline "\n")
 
-(define-lex-abbrev operator (:or "="))
+(define-lex-abbrev operator (:or "=" "+"))
 
 (define python-lexer
   (lexer-src-pos
@@ -85,15 +85,29 @@
       [(struct* position-token ([token (? token-eof?)]
                                 [start-pos start]
                                 [end-pos end]))
-       (reverse tokens)]
+       (reverse (cons next tokens))]
       [else (loop (cons next tokens))])))
 
 (define (plain-token? token)
   (or (token-number? token)
       (token-identifier? token)))
 
+(define (search pass find tokens)
+  (let loop ([tokens tokens])
+    (if (null? tokens)
+      #f
+      (let ()
+        (define current (car tokens))
+        (cond
+          [(for/fold ([ok #t])
+                     ([what pass])
+                     (and ok (what (position-token-token current))))
+           (loop (cdr tokens))]
+          [(find (position-token-token current)) tokens]
+          [else #f])))))
+
 ;; returns a tree and an unparsed tree
-(define (parse tokens [delimiter #f])
+(define (parse tokens [delimiter #f] [indent-level 0])
   (let loop ([tree '()]
              [tokens tokens])
     (if (null? tokens)
@@ -107,10 +121,45 @@
                                     [end-pos end]))
            (loop (append tree (list (token-value token)))
                  (cdr tokens))]
+
+          [(struct* position-token ([token (? token-colon?)]
+                                    [start-pos start]
+                                    [end-pos end]))
+
+           ;; we might be in an array-splicing operation
+           ;; a[2:5]
+           (if (eq? delimiter 'brackets)
+             (loop (append tree (list '%colon))
+                   (cdr tokens))
+
+             ;; otherwise we are in some sort of block
+             ;; if x == 1:
+             ;;    ....
+             (let ()
+               ;; check to see if there are other tokens on this line besides
+               ;; just whitespace
+               (define single-line? (search (list token-tab? token-space?)
+                                            (lambda (t)
+                                              (not (token-newline? t)))
+                                            (cdr tokens)))
+               (if single-line?
+                 (error 'parse "handle single line")
+                 (let ()
+                   (define next-line (search (list token-tab? token-space?)
+                                             token-newline?
+                                             (cdr tokens)))
+                   (define spaces (search (list token-space?)
+                                          (lambda (i)
+                                            (not (token-space? i)))
+                                          (cdr next-line)))
+                   (define-values (sub-tree rest) (parse spaces #f (- (length next-line) (length spaces))))
+                   (loop (append tree (list '%colon `(%block ,@sub-tree)))
+                         rest)))))]
+
           [(struct* position-token ([token (? token-left-paren?)]
                                     [start-pos start]
                                     [end-pos end]))
-           (define-values (sub-tree unparsed) (parse (cdr tokens) 'parens))
+           (define-values (sub-tree unparsed) (parse (cdr tokens) 'parens indent-level))
            (loop (append tree (list `(#%parens ,@sub-tree)))
                  unparsed)]
 
@@ -124,7 +173,7 @@
           [(struct* position-token ([token (? token-left-bracket?)]
                                     [start-pos start]
                                     [end-pos end]))
-           (define-values (sub-tree unparsed) (parse (cdr tokens) 'bracket))
+           (define-values (sub-tree unparsed) (parse (cdr tokens) 'bracket indent-level))
            (loop (append tree (list `(#%brackets ,@sub-tree)))
                  unparsed)]
 
@@ -135,9 +184,20 @@
              (error 'read "unexpected `]' seen"))
            (values tree (cdr tokens))]
 
-          [(struct* position-token ([token (and token (or (? token-newline?)
-                                                          (? token-space?)
-                                                          (? token-tab?)))]
+          [(struct* position-token ([token (? token-space?)]
+                                    [start-pos start]
+                                    [end-pos end]))
+           (loop tree (cdr tokens))]
+
+          [(struct* position-token ([token (or (? token-newline?)
+                                               (? token-eof?))]
+                                    [start-pos start]
+                                    [end-pos end]))
+           (define-values (sub-tree more) (parse (cdr tokens) delimiter indent-level))
+           (values (append (list `(%line ,@tree)) sub-tree)
+                   more)]
+
+          [(struct* position-token ([token (and token (or (? token-tab?)))]
                                     [start-pos start]
                                     [end-pos end]))
            (loop tree (cdr tokens))])))))
@@ -154,29 +214,38 @@
   (check-equal? 1 1)
 
   (check-equal? (python-read-string "1") 
-                '(1))
+                '((%line 1)))
 
   (check-equal? (python-read-string "x")
-                '(x))
+                '((%line x)))
 
   (check-equal? (python-read-string #<<HERE
 x = 5
 HERE
 )
-                '(x = 5))
+                '((%line x = 5)))
 
 (check-equal? (python-read-string #<<HERE
 (x)
 HERE
 )
 
-                '((#%parens x)))
+                '((%line (#%parens x))))
 
   (check-equal? (python-read-string #<<HERE
 x = [for blah(z) in burger]
 HERE
 )
 
-                '(x = (#%brackets for blah (#%parens z) in burger)))
+                '((%line x = (#%brackets for blah (#%parens z) in burger))))
+
+  (check-equal? (python-read-string #<<HERE
+def foo(x):
+    return x + 1
+HERE
+)
+
+                '(def foo (#%parens x) %colon
+                      (%block (%line return x + 1))))
 
   )
