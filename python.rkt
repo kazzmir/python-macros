@@ -14,6 +14,9 @@
 (define (unary-operator precedence unary [postfix? #f])
     (operator precedence 'left #f unary postfix?))
 
+(define (copy-environment environment)
+    (hash-copy environment))
+
 (define (environment-value environment name)
     (hash-ref environment name (lambda () #f)))
 
@@ -23,6 +26,19 @@
 (define python-and
   (binary-operator 0.5 'left (lambda (left right)
                                (parsed `(op and ,left ,right)))))
+
+(define python-+
+  (binary-operator 1 'left (lambda (left right)
+                               (parsed `(op + ,left ,right)))))
+
+(define python-%
+  (binary-operator 2 'left (lambda (left right)
+                               (parsed `(op % ,left ,right)))))
+
+(define python-==
+  (binary-operator 0.2 'left (lambda (left right)
+                               (parsed `(op == ,left ,right)))))
+
 
 (define python-=
   (binary-operator 0.1 'left (lambda (left right)
@@ -38,8 +54,14 @@
 (define (base-environment)
   (define environment (make-hash))
   (add-operator! environment '= python-=)
+  (add-operator! environment '== python-==)
+  (add-operator! environment '+ python-+)
+  (add-operator! environment '% python-%)
   (add-operator! environment 'and python-and)
   (add-operator! environment '%dot python-dot)
+  (add-lexical! environment 'python-make-list)
+  (add-lexical! environment 'list)
+  (add-lexical! environment 'print)
   environment)
 
 (define (remove-parsed what)
@@ -74,6 +96,17 @@
      (cons arg (parse-args more environment))]
     [(list) (list arg)]))
 
+(define (get-args args environment)
+  (match args
+    [(list) '()]
+    [(list '%comma rest ...) (get-args rest environment)]
+    [(list (and id (? symbol?)) '= more ...)
+     (define-values (expr rest) (enforest more environment))
+     ;; TODO: handle expr
+     (cons id (get-args rest environment))]
+    [(list (and id (? symbol?)) rest ...)
+     (cons id (get-args rest environment))]))
+
 (define (enforest input environment)
   (define (parse input precedence left current)
     (match input
@@ -83,8 +116,16 @@
              (list '#%parens args ...) '%colon
              (list '%block body ...)
              rest ...)
-       (define out (parsed `(def ,name ,args (unparsed ,@body))))
+       (define real-args (get-args args environment))
+       (define out (parsed `(def ,name ,real-args (unparsed ,@body))))
        (values out rest)]
+
+      [(list 'for (and iterator (? symbol?)) 'in more ...)
+       (define-values (stuff rest1) (enforest more environment))
+       (match rest1
+         [(list '%colon (list '%block body ...) rest2 ...)
+          (define out (parsed `(for ,iterator ,stuff (unparsed ,@body))))
+          (values out rest2)])]
 
       [(list 'if more ...)
        (define-values (condition rest1) (enforest more environment))
@@ -95,6 +136,11 @@
 
       [(list 'import (and name (? symbol?)) rest ...)
        (define out (parsed `(import ,name)))
+       (values out rest)]
+
+      [(list 'print stuff ...)
+       (define-values (arg1 rest) (enforest stuff environment))
+       (define out `(call print ,arg1))
        (values out rest)]
       
       [(list (and (? (lambda (i)
@@ -136,6 +182,16 @@
              (error 'low-precedence-unary "implement"))
            (values (left current) input)))]
 
+      [(list (list '#%brackets inside ...) rest ...)
+       (if current
+         ;; list ref
+         (error 'enforest "handle list ref")
+         (let ()
+           (define inside* (parse-all inside environment))
+           (define out (parsed `(call python-make-list ,inside*)))
+           (values (left out) rest)))]
+
+
        [(list (list '#%parens args ...) more ...)
         (debug "Function call with ~a at ~a\n" current precedence)
         (if current 
@@ -168,6 +224,11 @@
          (values (left current) input)
          (parse rest precedence left (parsed id)))]
 
+      [(list (and str (? string?)) rest ...)
+       (if current
+         (values (left current) input)
+         (parse rest precedence left (parsed str)))]
+
       [(list (and number (? number?)) rest ...)
        (if current
          (values (left current) input)
@@ -198,14 +259,30 @@
   (debug "Expand ~a\n" tree)
   (match tree
     [(list 'assign left right)
-     (define left* (expand left environment))
      (define right* (expand right environment))
+     (define left*
+       (if (and (symbol? left)
+                (not (eq? (environment-value environment left) 'lexical)))
+         (begin
+           ;; undefined variable, so add it to the lexical scope
+           (add-lexical! environment left)
+           left)
+         ;; defined variable or some other kind of expression, so expand it
+         (expand left environment)))
+
      `(assign ,left* ,right*)]
 
     [(list 'op op left right)
      (define left* (expand left environment))
      (define right* (expand right environment))
      `(op ,op ,left* ,right*)]
+
+    [(list 'for iterator expr body)
+     (define new-environment (copy-environment environment))
+     (add-lexical! new-environment iterator)
+     (define expr* (expand expr environment))
+     (define body* (expand body new-environment))
+     `(for ,iterator ,expr* ,body*)]
 
     [(list 'if condition body)
      (define condition* (expand condition environment))
@@ -224,7 +301,8 @@
      ;; to an attribute which we don't know about
      `(dot ,left* ,right)]
 
-    [(? number?) tree]
+    [(or (? number?)
+         (? string?)) tree]
 
     [(list 'import what)
      (add-lexical! environment what)
@@ -262,8 +340,11 @@
 
     [(list 'def name (list args ...) body)
      (debug "Expand def body ~a\n" body)
-     (define body* (expand body environment))
      (add-lexical! environment name)
+     (define body-environment (copy-environment environment))
+     (for ([arg args])
+       (add-lexical! body-environment arg))
+     (define body* (expand body body-environment))
      `(def ,name (,@args) ,body*)]
 
     [else (error 'expand "can't expand ~a" tree)]))

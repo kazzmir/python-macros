@@ -72,7 +72,7 @@
 (define-lex-abbrev string (:or (:: #\" (:* string-character-double) #\")
                                (:: #\' (:* string-character-single) #\')))
 
-(define-lex-abbrev operator (:or "=" "+" "%" "*"))
+(define-lex-abbrev operator (:or "==" "=" "+" "%" "*" "%"))
 
 (define-lex-abbrev line-comment (:: (:or "#")
                                     (:* (:~ "\n"))

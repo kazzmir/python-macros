@@ -21,7 +21,8 @@ def find_executable(name, default_path, extra_dirs = [], where = '.'):
 def run(path, *extra_args):
     import os
     import sys
-    all = [path] + list(extra_args) + sys.argv[1:]
+    # all = [path] + list(extra_args) + sys.argv[1:]
+    all = [path] + list(extra_args)
     print "Executing %s" % all
     # print sys.argv
     os.execve(path, all, os.environ)
