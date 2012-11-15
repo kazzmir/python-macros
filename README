@@ -1,1 +1,5 @@
 Macros for Python
+
+python.rkt: expands python programs by reducing macros
+read.rkt: containers the lexer for python program, the output is the concrete-level syntax tree
+show.rkt: give a filename and it will print the lexed output
