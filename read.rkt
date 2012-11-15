@@ -259,12 +259,14 @@
                       (define new-level (- (length (cdr next-line)) (length spaces)))
                       (debug "New level ~a\n" new-level)
                       (define-values (sub-tree rest) (parse (cdr next-line) #f new-level))
-                      (define-values (lines more) (parse rest #f indent-level))
+                      ;; create the block
                       (define this (append tree (list '%colon `(%block ,@sub-tree))))
-                      (values (append (list this) lines) more)
+
+                      ;; then keep parsing with the same indentation level
+                      (define-values (lines more) (parse rest #f indent-level))
+                      (values (append this lines) more)
                       #;
-                      (loop (append tree (list '%colon `(%block ,@sub-tree)))
-                            rest)))))]
+                      (loop this more)))))]
 
              [(struct* position-token ([token (? token-left-paren?)]
                                        [start-pos start]
@@ -392,8 +394,8 @@ def foo(x):
 HERE
 )
 
-                '((def foo (#%parens x) %colon
-                      (%block (return x + 1)))))
+                '(def foo (#%parens x) %colon
+                      (%block (return x + 1))))
 
   (check-equal? (python-read-string #<<HERE
 def foo(x):
@@ -403,8 +405,8 @@ bar(8)
 HERE
 )
 
-                '((def foo (#%parens x) %colon
-                      (%block (return x + 1)))
+                '(def foo (#%parens x) %colon
+                      (%block (return x + 1))
                   (foo (#%parens 5))
                   (bar (#%parens 8))))
 
