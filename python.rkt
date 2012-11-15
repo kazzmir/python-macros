@@ -67,8 +67,12 @@
   result)
 
 (define (parse-args args environment)
-  ;; TODO
-  args)
+  (define-values (arg rest)
+                 (enforest args environment))
+  (match rest
+    [(list '%comma more ...)
+     (cons arg (parse-args more environment))]
+    [(list) (list arg)]))
 
 (define (enforest input environment)
   (define (parse input precedence left current)
@@ -81,6 +85,13 @@
              rest ...)
        (define out (parsed `(def ,name ,args (unparsed ,@body))))
        (values out rest)]
+
+      [(list 'if more ...)
+       (define-values (condition rest1) (enforest more environment))
+       (match rest1
+         [(list '%colon (list '%block inside ...) rest2 ...)
+          (define out (parsed `(if ,condition (unparsed ,@inside))))
+          (values out rest2)])]
 
       [(list 'import (and name (? symbol?)) rest ...)
        (define out (parsed `(import ,name)))
@@ -196,9 +207,21 @@
      (define right* (expand right environment))
      `(op ,op ,left* ,right*)]
 
+    [(list 'if condition body)
+     (define condition* (expand condition environment))
+     (define body* (expand body environment))
+     `(if ,condition* ,body*)]
+
+    [(list 'call function args ...)
+     (define function* (expand function environment))
+     (define args* (for/list ([arg args])
+                     (expand arg environment)))
+     `(call ,function* ,args*)]
+
     [(list 'dot left right)
      (define left* (expand left environment))
-     ;; dont expand the right side
+     ;; dont expand the right side because its a reference
+     ;; to an attribute which we don't know about
      `(dot ,left* ,right)]
 
     [(? number?) tree]
