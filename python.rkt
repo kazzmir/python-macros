@@ -45,7 +45,7 @@
                                (parsed `(assign ,left ,right)))))
 
 (define python-dot
-  (binary-operator 9 'left (lambda (left right)
+  (binary-operator 100 'left (lambda (left right)
                                (parsed `(dot ,left ,right)))))
 
 (define (add-operator! environment name value)
@@ -79,6 +79,7 @@
                     (void))
 
 (define function-call-precedence 99)
+(define list-ref-precedence 80)
 
 (define (parse-all line environment)
   (define-values (result rest)
@@ -106,6 +107,20 @@
      (cons id (get-args rest environment))]
     [(list (and id (? symbol?)) rest ...)
      (cons id (get-args rest environment))]))
+
+;; could be just a plain expression or an array splicing operation
+(define (parse-list-ref stuff environment)
+  (define-values (left rest) (enforest stuff environment))
+  (match rest
+    [(list '%colon)
+     ;; list splicing but nothing on the right side
+     (parsed `(array-splice ,left))]
+    [(list '%colon more ...)
+     ;; list splicing with stuff on the right
+     (define right (parse-all more environment))
+     (parsed `(array-splice ,left ,right))]
+    [(list thing more ...)
+     (error 'parse-list-ref "unknown list-ref ~a" rest)]))
 
 (define (enforest input environment)
   (define (parse input precedence left current)
@@ -184,9 +199,18 @@
 
       [(list (list '#%brackets inside ...) rest ...)
        (if current
-         ;; list ref
-         (error 'enforest "handle list ref")
          (let ()
+           (define inside* (parse-list-ref inside environment))
+           (if (> list-ref-precedence precedence)
+             (let ()
+               (define out (parsed `(list-ref ,current ,inside*)))
+               (parse rest precedence left out))
+             (let ()
+               (define current* (left current))
+               (define out (parsed `(list-ref ,current* ,inside*)))
+               (values out rest))))
+         (let ()
+           ;; TODO: handle list comprehension syntax
            (define inside* (parse-all inside environment))
            (define out (parsed `(call python-make-list ,inside*)))
            (values (left out) rest)))]
@@ -276,6 +300,20 @@
      (define left* (expand left environment))
      (define right* (expand right environment))
      `(op ,op ,left* ,right*)]
+
+    [(list 'list-ref left right)
+     (define left* (expand left environment))
+     (define right* (expand right environment))
+     `(list-ref ,left* ,right*)]
+
+    [(list 'array-splice bottom)
+     (define bottom* (expand bottom environment))
+     `(array-splice ,bottom)]
+
+    [(list 'array-splice bottom top)
+     (define bottom* (expand bottom environment))
+     (define top* (expand top environment))
+     `(array-splice ,bottom ,top)]
 
     [(list 'for iterator expr body)
      (define new-environment (copy-environment environment))
