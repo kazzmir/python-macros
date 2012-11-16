@@ -81,7 +81,7 @@
                             (:: #\" (:* string-character-double) #\")
                             (:: #\' (:* string-character-single) #\')))
 
-(define-lex-abbrev operator (:or "==" "=" "+" "%" "*" "%"))
+(define-lex-abbrev operator (:or "!=" "==" "=" "+" "%" "*" "%" "<" ">" "-"))
 
 (define-lex-abbrev line-comment (:: (:or "#")
                                     (:* (:~ "\n"))
@@ -161,8 +161,8 @@
       (token-identifier? token)))
 
 (define-syntax-rule (debug x ...)
-                    #;
                     (printf x ...)
+                    #;
                     (void))
 
 (define (tokens->datum tokens)
@@ -273,7 +273,7 @@
                                              (cdr next-line)))
                       (define new-level (- (length (cdr next-line)) (length spaces)))
                       (debug "New level ~a\n" new-level)
-                      (define-values (sub-tree rest) (parse (cdr next-line) #f new-level))
+                      (define-values (sub-tree rest) (parse (cdr next-line) delimiter new-level))
                       ;; create the block
                       (define this (append tree (list '%colon `(%block ,@sub-tree))))
 
@@ -295,6 +295,20 @@
                                        [end-pos end]))
               (when (not (eq? delimiter 'parens))
                 (error 'read "unexpected `)' seen"))
+              (values tree (cdr skip-space))]
+
+             [(struct* position-token ([token (? token-left-brace?)]
+                                       [start-pos start]
+                                       [end-pos end]))
+              (define-values (sub-tree unparsed) (parse (cdr skip-space) 'brace 0))
+              (loop (append tree (list `(#%braces ,@sub-tree)))
+                    unparsed)]
+
+             [(struct* position-token ([token (? token-right-brace?)]
+                                       [start-pos start]
+                                       [end-pos end]))
+              (when (not (eq? delimiter 'brace))
+                (error 'read "unexpected `}' seen"))
               (values tree (cdr skip-space))]
 
              [(struct* position-token ([token (? token-left-bracket?)]
