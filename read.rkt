@@ -69,8 +69,17 @@
                    (:or (:: #\\ any-char)
                         (:~ #\')))
 
-(define-lex-abbrev string (:or (:: #\" (:* string-character-double) #\")
-                               (:: #\' (:* string-character-single) #\')))
+(define-lex-abbrev string-character-triple
+                   (complement (:: #\" #\" #\"))
+                   #;
+                   (:or (:: #\\ any-char)
+                        (:~ (:: #\" #\" #\"))))
+
+(define-lex-abbrev string (:or
+                            (:: #\" #\" #\" (:* string-character-triple)
+                                #\" #\" #\")
+                            (:: #\" (:* string-character-double) #\")
+                            (:: #\' (:* string-character-single) #\')))
 
 (define-lex-abbrev operator (:or "==" "=" "+" "%" "*" "%"))
 
@@ -162,6 +171,8 @@
     (cond
       [(plain-token? what) (token-value what)]
       [(token-space? what) 'space]
+      [(token-left-paren? what) 'lparen]
+      [(token-right-paren? what) 'rparen]
       [(token-left-bracket? what) '|[|]
       [(token-right-bracket? what) '|]|]
       [(token-colon? what) ':]
@@ -192,7 +203,11 @@
     (debug "Parse ~a. Tree is ~a\n" (tokens->datum tokens) tree)
     (cond
       ;; start of a line, so check the indentation level
-      [(and (null? tree)
+      [(and (not delimiter)
+            (null? tree)
+            ; if its an empty line just keep going
+            (and (not (null? tokens))
+                 (not (token-newline? (position-token-token (car tokens)))))
             (let ()
               (define next-non-space (search (list token-space?)
                                              (lambda (i)
@@ -310,7 +325,7 @@
               (define this-line tree)
               (define-values (lines more)
                              (parse (cdr skip-space)
-                                    #f indent-level))
+                                    delimiter indent-level))
               (values (append (list this-line) lines)
                       more)
               #;

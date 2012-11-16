@@ -2,6 +2,7 @@
 
 (require "read.rkt"
          racket/pretty
+         racket/list
          racket/match
          racket/cmdline)
 
@@ -26,6 +27,14 @@
 (define python-and
   (binary-operator 0.5 'left (lambda (left right)
                                (parsed `(op and ,left ,right)))))
+
+(define python-is
+  (binary-operator 0.5 'left (lambda (left right)
+                               (parsed `(op is ,left ,right)))))
+
+(define python-not
+  (unary-operator 1.3 (lambda (left)
+                        (parsed `(un-op not ,left)))))
 
 (define python-+
   (binary-operator 1 'left (lambda (left right)
@@ -58,10 +67,13 @@
   (add-operator! environment '+ python-+)
   (add-operator! environment '% python-%)
   (add-operator! environment 'and python-and)
+  (add-operator! environment 'not python-not)
+  (add-operator! environment 'is python-is)
   (add-operator! environment '%dot python-dot)
   (add-lexical! environment 'python-make-list)
   (add-lexical! environment 'list)
   (add-lexical! environment 'print)
+  (add-lexical! environment 'None)
   environment)
 
 (define (remove-parsed what)
@@ -95,7 +107,10 @@
   (match rest
     [(list '%comma more ...)
      (cons arg (parse-args more environment))]
-    [(list) (list arg)]))
+    [(list)
+     (if arg
+       (list arg)
+       '())]))
 
 (define (get-args args environment)
   (match args
@@ -110,29 +125,53 @@
 
 ;; could be just a plain expression or an array splicing operation
 (define (parse-list-ref stuff environment)
-  (define-values (left rest) (enforest stuff environment))
-  (match rest
-    [(list '%colon)
-     ;; list splicing but nothing on the right side
-     (parsed `(array-splice ,left))]
+  (match stuff
     [(list '%colon more ...)
-     ;; list splicing with stuff on the right
-     (define right (parse-all more environment))
-     (parsed `(array-splice ,left ,right))]
+     (define-values (right rest) (enforest more environment))
+     ;; list splicing but nothing on the right side
+     (parsed `(array-splice 0 ,right))]
+    [(list '%colon)
+     (parsed `(array-splice))]
     [(list thing more ...)
-     (error 'parse-list-ref "unknown list-ref ~a" rest)]))
+     (define-values (left more2) (enforest stuff environment))
+     (match more2
+       [(list '%colon)
+        (parsed `(array-splice ,left))]
+       [(list '%colon more3 ...)
+        (define right (parse-all more3 environment))
+        (parsed `(array-splice ,left ,right))])]))
+
+(define (parse-comma-ids what)
+  (filter (lambda (i)
+            (not (eq? what '%comma)))
+          what))
+
+(define (parse-tuple stuff environment)
+  (define-values (expr rest) (enforest stuff environment))
+  (match rest
+    [(list '%comma more ...)
+     (cons expr (parse-tuple more environment))]
+    [(list) (list expr)]))
 
 (define (enforest input environment)
   (define (parse input precedence left current)
     (match input
       [(struct parsed (what))
        (values (left input) #f)]
+
       [(list 'def (and name (? symbol?))
              (list '#%parens args ...) '%colon
              (list '%block body ...)
              rest ...)
        (define real-args (get-args args environment))
        (define out (parsed `(def ,name ,real-args (unparsed ,@body))))
+       (values out rest)]
+
+      [(list 'class (and name (? symbol?))
+             (list #%parens super ...) '%colon
+             (list '%block body ...)
+             rest ...)
+       (define out (parsed `(class ,name ,super (unparsed ,@body))))
        (values out rest)]
 
       [(list 'for (and iterator (? symbol?)) 'in more ...)
@@ -149,9 +188,43 @@
           (define out (parsed `(if ,condition (unparsed ,@inside))))
           (values out rest2)])]
 
+      [(list 'global (and x (? symbol?)))
+       (define out (parsed `(global ,x)))
+       (values out #f)]
+
+      [(list 'try '%colon (list '%block try-body ...) rest ...)
+
+       ;; get all the except blocks
+       (define-values (excepts rest*)
+         (let loop ([all '()]
+                    [rest rest])
+           (match rest
+             [(list 'except type '%colon (list '%block except-block ...) more ...)
+              (define out (parsed `(except ,type (unparsed ,@except-block))))
+              (loop (cons out all) more)]
+             [(list 'except x ...) (error 'enforest "except error ~a" rest)]
+             [else (values (reverse all) rest)])))
+
+       (define out (parsed `(try (unparsed ,@try-body) ,@excepts)))
+       (values out rest*)]
+
       [(list 'import (and name (? symbol?)) rest ...)
        (define out (parsed `(import ,name)))
        (values out rest)]
+
+      [(list 'from (and name (? symbol?)) 'import stuff ...)
+       (match stuff
+         [(list (list '#%parens names ...) rest ...)
+          (define names* (filter (lambda (i)
+                                   (not (eq? i '%comma)))
+                                 (flatten names)))
+          (define out (parsed `(import-from ,name ,@names*)))
+          (values out rest)]
+         [else
+           (define imports (parse-comma-ids stuff))
+           (define out (parsed `(import-from ,name ,@imports)))
+           (values out #f)]
+         [else (error 'enforest "handle from ... import ...")])]
 
       [(list 'print stuff ...)
        (define-values (arg1 rest) (enforest stuff environment))
@@ -217,7 +290,7 @@
 
 
        [(list (list '#%parens args ...) more ...)
-        (debug "Function call with ~a at ~a\n" current precedence)
+        (debug "Maybe function call with ~a at ~a\n" current precedence)
         (if current 
           (if (> precedence function-call-precedence)
             (let ()
@@ -230,9 +303,8 @@
               (parse more precedence left (parsed `(call ,current ,@parsed-args)))))
           ;; not a function call, just parenthesizing an expression
           (let ()
-            (define inner (parse-all args environment))
-            (parse more precedence left inner)))]
-                                          
+            (define inner (parse-tuple args environment))
+            (parse more precedence left (parsed `(tuple ,@inner)))))]
 
       [(list 'return stuff ...)
        (if current
@@ -301,6 +373,26 @@
      (define right* (expand right environment))
      `(op ,op ,left* ,right*)]
 
+    [(list 'un-op op what)
+     (define what* (expand what environment))
+     `(un-op ,op ,what)]
+
+    [(list 'class name super body)
+     (add-lexical! environment name)
+     (define body-environment (copy-environment environment))
+     (define body* (expand body body-environment))
+     `(class ,name ,super ,body*)]
+
+    [(list 'tuple stuff ...)
+     (define stuff* (for/list ([x stuff])
+                      (expand x environment)))
+     `(tuple ,@stuff*)]
+
+    [(list 'import-from lib names ...)
+     (for ([name names])
+       (add-lexical! environment name))
+     `(import-from ,lib ,@names)]
+
     [(list 'list-ref left right)
      (define left* (expand left environment))
      (define right* (expand right environment))
@@ -309,6 +401,22 @@
     [(list 'array-splice bottom)
      (define bottom* (expand bottom environment))
      `(array-splice ,bottom)]
+
+    [(list 'global name)
+     (add-lexical! environment name)
+     `(global ,name)]
+
+    [(list 'try try-block excepts ...)
+     (define try-block* (expand try-block environment))
+     (define excepts*
+       (for/list ([except excepts])
+         (expand except environment)))
+     `(try ,try-block* ,@excepts*)]
+
+    [(list 'except type body)
+     ;; TODO: handle when except binds a variable
+     (define body* (expand body environment))
+     `(except ,type ,body*)]
 
     [(list 'array-splice bottom top)
      (define bottom* (expand bottom environment))
@@ -371,6 +479,7 @@
         `(,out1 ,@out2)])]
 
     [(and id (? symbol?))
+     #;
      (when (not (eq? (environment-value environment id)
                      'lexical))
        (error 'expand "unbound identifier ~a" id))
