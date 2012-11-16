@@ -44,13 +44,21 @@
   (binary-operator 2 'left (lambda (left right)
                                (parsed `(op % ,left ,right)))))
 
+(define python->=
+  (binary-operator 0.9 'left (lambda (left right)
+                               (parsed `(op >= ,left ,right)))))
+
 (define python-==
   (binary-operator 0.2 'left (lambda (left right)
                                (parsed `(op == ,left ,right)))))
 
-
 (define python-=
   (binary-operator 0.1 'left (lambda (left right)
+                               (parsed `(assign ,left ,right)))))
+
+(define python-+=
+  (binary-operator 0.1 'left (lambda (left right)
+                               ;; Use assign+
                                (parsed `(assign ,left ,right)))))
 
 (define python-dot
@@ -66,6 +74,8 @@
   (add-operator! environment '== python-==)
   (add-operator! environment '+ python-+)
   (add-operator! environment '% python-%)
+  (add-operator! environment '>= python->=)
+  (add-operator! environment '+= python-+=)
   (add-operator! environment 'and python-and)
   (add-operator! environment 'not python-not)
   (add-operator! environment 'is python-is)
@@ -135,6 +145,7 @@
     [(list thing more ...)
      (define-values (left more2) (enforest stuff environment))
      (match more2
+       [(list) left]
        [(list '%colon)
         (parsed `(array-splice ,left))]
        [(list '%colon more3 ...)
@@ -439,7 +450,7 @@
      (define function* (expand function environment))
      (define args* (for/list ([arg args])
                      (expand arg environment)))
-     `(call ,function* ,args*)]
+     `(call ,function* ,@args*)]
 
     [(list 'dot left right)
      (define left* (expand left environment))
