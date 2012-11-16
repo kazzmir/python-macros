@@ -13,6 +13,7 @@
 (define-empty-tokens python-empty-tokens
   [eof space tab newline
    end-of-line-comment
+   continue-line
    left-bracket right-bracket
    left-paren right-paren
    left-brace right-brace
@@ -39,6 +40,7 @@
 (define-tokens? eof number identifier 
                 end-of-line-comment
                 string
+                continue-line
                 ;block-comment parse-error
                 left-paren right-paren
                 space tab newline
@@ -112,6 +114,7 @@
     ["#" (token-end-of-line-comment)]
     ["." (token-identifier '%dot)]
     ["," (token-identifier '%comma)]
+    [#\\ (token-continue-line)]
     ["[" (token-left-bracket)]
     ["]" (token-right-bracket)]
     ["(" (token-left-paren)]
@@ -315,6 +318,16 @@
               (define-values (sub-tree unparsed) (parse (cdr skip-space) 'parens 0))
               (loop (append tree (list `(#%parens ,@sub-tree)))
                     unparsed)]
+
+             [(struct* position-token ([token (? token-continue-line?)]
+                                       [start-pos start]
+                                       [end-pos end]))
+              (define next (search (list token-space? token-tab?)
+                                   token-newline?
+                                   (cdr skip-space)))
+              (if next
+                (loop tree (cdr next))
+                (loop tree (cdr skip-space)))]
 
              [(struct* position-token ([token (? token-right-paren?)]
                                        [start-pos start]
