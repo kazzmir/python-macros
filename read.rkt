@@ -161,8 +161,8 @@
       (token-identifier? token)))
 
 (define-syntax-rule (debug x ...)
-                    (printf x ...)
                     #;
+                    (printf x ...)
                     (void))
 
 (define (tokens->datum tokens)
@@ -195,6 +195,26 @@
                      (or ok (what (position-token-token current))))
            (loop (cdr tokens))]
           [else #f])))))
+
+(define (next-non-empty-line tokens)
+  (define end-of-line 
+    (search (list token-tab? token-space?)
+            token-newline?
+            tokens))
+  (if (and end-of-line
+           (token-newline? (position-token-token (car end-of-line))))
+    (let ()
+      (define next (search (list token-tab? token-space?)
+                           (lambda (i)
+                             (not (or (token-tab? i)
+                                      (token-space? i))))
+                           (cdr end-of-line)))
+      (if (and next (token-newline? (position-token-token (car next))))
+        (next-non-empty-line next)
+        end-of-line))
+    (if end-of-line
+      end-of-line
+      tokens)))
 
 ;; returns a tree and an unparsed tree
 (define (parse tokens [delimiter #f] [indent-level 0])
@@ -264,9 +284,7 @@
                   (if single-line?
                     (error 'parse "handle single line")
                     (let ()
-                      (define next-line (search (list token-tab? token-space?)
-                                                token-newline?
-                                                (cdr skip-space)))
+                      (define next-line (next-non-empty-line (cdr skip-space)))
                       (define spaces (search (list token-space?)
                                              (lambda (i)
                                                (not (token-space? i)))
