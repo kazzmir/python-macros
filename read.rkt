@@ -383,11 +383,14 @@
                                        [end-pos end]))
               ; (define this-line `(%line ,@tree))
               (define this-line tree)
-              (define-values (lines more)
-                             (parse (cdr skip-space)
-                                    delimiter indent-level))
-              (values (append (list this-line) lines)
-                      more)
+              (if delimiter
+                (loop tree (cdr skip-space))
+                (let ()
+                  (define-values (lines more)
+                                 (parse (cdr skip-space)
+                                        delimiter indent-level))
+                  (values (append (list this-line) lines)
+                          more)))
               #;
               (values (list `(%line ,@tree)) (cdr skip-space))
               #;

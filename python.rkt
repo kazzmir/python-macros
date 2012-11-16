@@ -32,6 +32,12 @@
   (binary-operator 0.5 'left (lambda (left right)
                                (parsed `(op or ,left ,right)))))
 
+
+(define python-in
+  (binary-operator 0.7 'left (lambda (left right)
+                               (parsed `(op in ,left ,right)))))
+
+
 (define python-is
   (binary-operator 0.5 'left (lambda (left right)
                                (parsed `(op is ,left ,right)))))
@@ -81,6 +87,7 @@
   (add-operator! environment '>= python->=)
   (add-operator! environment '+= python-+=)
   (add-operator! environment 'and python-and)
+  (add-operator! environment 'in python-in)
   (add-operator! environment 'or python-or)
   (add-operator! environment 'not python-not)
   (add-operator! environment 'is python-is)
@@ -111,6 +118,7 @@
 (define (parse-all line environment)
   (define-values (result rest)
                  (enforest line environment))
+  #;
   (debug "Parse all: result = ~a rest = ~a\n" (parsed-data result) rest)
   (when (and rest (not (null? rest)))
     (error 'parse-all "could not parse entire expression ~a" rest))
@@ -205,11 +213,33 @@
                       (enforest stuff environment))
        (loop (cons first args) rest)])))
 
+(define (parse-elses input environment)
+  (let loop ([all '()]
+             [input input])
+    (match input
+      [(list 'elif more ...)
+       (define-values (condition rest) (enforest more environment))
+       (match rest
+         [(list '%colon (list '%block body ...) rest2 ...)
+          (define out (parsed `(elif ,condition (unparsed ,@body))))
+          (loop (cons out all) rest2)])]
+      [(list 'else more ...)
+       (define-values (condition rest) (enforest more environment))
+       (match rest
+         [(list '%colon (list '%block body ...) rest2 ...)
+          (define out (parsed `(else ,condition (unparsed ,@body))))
+          (loop (cons out all) rest2)])]
+      [else
+        (values (reverse all) input)])))
+
 (define (enforest input environment)
   (define (parse input precedence left current)
     (match input
       [(struct parsed (what))
        (values (left input) #f)]
+
+      [(list '%colon rest ...)
+       (values (left current) input)]
 
       [(list 'def (and name (? symbol?))
              (list '#%parens args ...) '%colon
@@ -217,6 +247,13 @@
              rest ...)
        (define real-args (get-args args environment))
        (define out (parsed `(def ,name ,real-args (unparsed ,@body))))
+       (values out rest)]
+
+      [(list 'class (and name (? symbol?))
+             '%colon
+             (list '%block body ...)
+             rest ...)
+       (define out (parsed `(class ,name () (unparsed ,@body))))
        (values out rest)]
 
       [(list 'class (and name (? symbol?))
@@ -230,20 +267,58 @@
        (define-values (stuff rest1) (enforest more environment))
        (match rest1
          [(list '%colon (list '%block body ...) rest2 ...)
-          (define out (parsed `(for ,iterator ,stuff (unparsed ,@body))))
+          (define out (parsed `(for (,iterator) ,stuff (unparsed ,@body))))
           (values out rest2)])]
 
+      [(list 'for
+             (and iterator1 (? symbol?)) '%comma
+             (and iterator2 (? symbol?))
+             'in more ...)
+       (define-values (stuff rest1) (enforest more environment))
+       (match rest1
+         [(list '%colon (list '%block body ...) rest2 ...)
+          (define out (parsed `(for (,iterator1 ,iterator2) ,stuff (unparsed ,@body))))
+          (values out rest2)])]
+
+
       [(list 'if more ...)
+       (debug "If\n")
        (define-values (condition rest1) (enforest more environment))
        (match rest1
          [(list '%colon (list '%block inside ...) rest2 ...)
-          (define out (parsed `(if ,condition (unparsed ,@inside))))
-          (values out rest2)])]
+          (define-values (elses rest3) (parse-elses rest2 environment))
+          (debug "Enforest elses ~a\n" elses)
+          (define out (parsed `(if ,condition (unparsed ,@inside) ,elses)))
+          (values out rest3)])]
 
       [(list 'raise more ...)
        (define-values (args rest) (parse-raise more environment))
        (define out (parsed `(raise ,@args)))
        (values out #f)]
+
+      ;; FIXME: hack to support
+      ;;   a, b = 1 + 2
+      [(list (and id1 (? symbol?))
+             '%comma
+             (and id2 (? symbol?))
+             '=
+             right-side ...)
+       (define-values (right rest) (enforest right-side environment))
+       (define out (parsed `(assign (,id1 ,id2)
+                                    ,right)))
+       (values out rest)]
+
+      [(list (and id1 (? symbol?))
+             '%comma
+             (and id2 (? symbol?))
+             '%comma
+             (and id3 (? symbol?))
+             '=
+             right-side ...)
+       (define-values (right rest) (enforest right-side environment))
+       (define out (parsed `(assign (,id1 ,id2 ,id3)
+                                    ,right)))
+       (values out rest)]
 
       [(list 'global (and x (? symbol?)))
        (define out (parsed `(global ,x)))
@@ -319,6 +394,10 @@
              (values (left current) input)
              (error 'low-precedence-unary "implement"))
            (values (left current) input)))]
+
+      [(list (list '#%braces inside ...) rest ...)
+       (define out `(make-hash ,@inside))
+       (parse rest precedence left out)]
 
       [(list (list '#%brackets inside ...) rest ...)
        (if current
@@ -407,14 +486,20 @@
     [(list 'assign left right)
      (define right* (expand right environment))
      (define left*
-       (if (and (symbol? left)
-                (not (eq? (environment-value environment left) 'lexical)))
-         (begin
-           ;; undefined variable, so add it to the lexical scope
-           (add-lexical! environment left)
-           left)
-         ;; defined variable or some other kind of expression, so expand it
-         (expand left environment)))
+       (match left
+         [(and (? symbol?)
+               (? (lambda (i)
+                    (not (eq? (environment-value environment i) 'lexical)))))
+          ;; undefined variable, so add it to the lexical scope
+          (add-lexical! environment left)
+           left]
+         [(list ids ...)
+          (for ([id ids])
+            (add-lexical! environment id))
+          ids]
+         [else
+           ;; defined variable or some other kind of expression, so expand it
+           (expand left environment)]))
 
      `(assign ,left* ,right*)]
 
@@ -488,10 +573,24 @@
      (define body* (expand body new-environment))
      `(for ,iterator ,expr* ,body*)]
 
-    [(list 'if condition body)
+    [(list 'if condition body elses)
      (define condition* (expand condition environment))
      (define body* (expand body environment))
-     `(if ,condition* ,body*)]
+     (define elses* (for/list ([else elses])
+                     (expand else environment)))
+     `(if ,condition* ,body* ,elses*)]
+
+    [(list 'elif condition body)
+     (define condition* (expand condition environment))
+     (define body* (expand body environment))
+     `(elif ,condition* ,body*)]
+
+    [(list 'else condition body)
+     (define condition* (if condition
+                          (expand condition environment)
+                          condition))
+     (define body* (expand body environment))
+     `(else ,condition* ,body*)]
 
     [(list 'call function args ...)
      (define function* (expand function environment))
