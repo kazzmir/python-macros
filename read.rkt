@@ -67,7 +67,7 @@
 
 (define-lex-abbrev string-character-single
                    (:or (:: #\\ any-char)
-                        (:~ #\')))
+                        (:& (:~ #\\) (:~ #\'))))
 
 (define-lex-abbrev string-character-triple
                    (complement (:: #\" #\" #\"))
@@ -142,6 +142,7 @@
 (define (python-read-port port)
   (let loop ([tokens '()])
     (define next (python-lexer port))
+    ; (debug "Lexed ~a\n" (position-token-token next))
     (match next
       [(struct* position-token ([token (? token-end-of-line-comment?)]
                                 [start-pos start]
@@ -187,13 +188,13 @@
       (let ()
         (define current (car tokens))
         (cond
-          [(find (position-token-token current))
-           (debug "Found ~a at ~a\n" find (tokens->datum tokens))
-           tokens]
           [(for/fold ([ok #f])
                      ([what pass])
                      (or ok (what (position-token-token current))))
            (loop (cdr tokens))]
+          [(find (position-token-token current))
+           (debug "Found ~a at ~a\n" find (tokens->datum tokens))
+           tokens]
           [else #f])))))
 
 (define (next-non-empty-line tokens)
@@ -267,7 +268,9 @@
 
               ;; we might be in an array-splicing operation
               ;; a[2:5]
-              (if (eq? delimiter 'brackets)
+              ;; or inside a hash {1:2}
+              (if (or (eq? delimiter 'brackets)
+                      (eq? delimiter 'brace))
                 (loop (append tree (list '%colon))
                       (cdr skip-space))
 
@@ -282,7 +285,12 @@
                                                  (not (token-newline? t)))
                                                (cdr skip-space)))
                   (if single-line?
-                    (error 'parse "handle single line")
+                    (let ()
+                      ;; for a single line just treat it like anything else
+                      ;; the parser will figure out if the thing after the colon
+                      ;; should be an expression for lambda
+                      (loop (append tree (list '%colon))
+                            (cdr skip-space)))
                     (let ()
                       (define next-line (next-non-empty-line (cdr skip-space)))
                       (define spaces (search (list token-space?)
