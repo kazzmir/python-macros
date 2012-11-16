@@ -28,6 +28,10 @@
   (binary-operator 0.5 'left (lambda (left right)
                                (parsed `(op and ,left ,right)))))
 
+(define python-or
+  (binary-operator 0.5 'left (lambda (left right)
+                               (parsed `(op or ,left ,right)))))
+
 (define python-is
   (binary-operator 0.5 'left (lambda (left right)
                                (parsed `(op is ,left ,right)))))
@@ -77,6 +81,7 @@
   (add-operator! environment '>= python->=)
   (add-operator! environment '+= python-+=)
   (add-operator! environment 'and python-and)
+  (add-operator! environment 'or python-or)
   (add-operator! environment 'not python-not)
   (add-operator! environment 'is python-is)
   (add-operator! environment '%dot python-dot)
@@ -106,7 +111,7 @@
 (define (parse-all line environment)
   (define-values (result rest)
                  (enforest line environment))
-  (debug "Parse all: result = ~a rest = ~a\n" result rest)
+  (debug "Parse all: result = ~a rest = ~a\n" (parsed-data result) rest)
   (when (and rest (not (null? rest)))
     (error 'parse-all "could not parse entire expression ~a" rest))
   result)
@@ -164,6 +169,42 @@
      (cons expr (parse-tuple more environment))]
     [(list) (list expr)]))
 
+(define (parse-excepts input environment)
+  (let loop ([all '()]
+             [rest input])
+    (match rest
+      [(list 'except more ...)
+       (define-values (first rest2)
+                      (enforest more environment))
+       (match rest2
+         [(list '%comma rest3 ...)
+          (define-values (second rest4)
+                         (enforest rest3 environment))
+          (match rest4
+            [(list '%colon (list '%block body ...) rest5 ...)
+             (values (cons (parsed `(except ,first ,second (unparsed ,@body)))
+                           all)
+                     rest5)])]
+         [(list '%colon (list '%block body ...) rest3 ...)
+          (loop (cons (parsed `(except '() ,first (unparsed ,@body)))
+                      all)
+                  rest3)]
+         )]
+      [else (values (reverse all) rest)])))
+
+;; raise URLError, ('ftp error: %s' % msg), sys.exc_info()[2]
+(define (parse-raise input environment)
+  (let loop ([args '()]
+             [input input])
+    (match input
+      [(list) (values (reverse args) '())]
+      [(list '%comma more ...)
+       (loop args more)]
+      [(list stuff ...)
+       (define-values (first rest)
+                      (enforest stuff environment))
+       (loop (cons first args) rest)])))
+
 (define (enforest input environment)
   (define (parse input precedence left current)
     (match input
@@ -199,6 +240,11 @@
           (define out (parsed `(if ,condition (unparsed ,@inside))))
           (values out rest2)])]
 
+      [(list 'raise more ...)
+       (define-values (args rest) (parse-raise more environment))
+       (define out (parsed `(raise ,@args)))
+       (values out #f)]
+
       [(list 'global (and x (? symbol?)))
        (define out (parsed `(global ,x)))
        (values out #f)]
@@ -207,14 +253,7 @@
 
        ;; get all the except blocks
        (define-values (excepts rest*)
-         (let loop ([all '()]
-                    [rest rest])
-           (match rest
-             [(list 'except type '%colon (list '%block except-block ...) more ...)
-              (define out (parsed `(except ,type (unparsed ,@except-block))))
-              (loop (cons out all) more)]
-             [(list 'except x ...) (error 'enforest "except error ~a" rest)]
-             [else (values (reverse all) rest)])))
+                      (parse-excepts rest environment))
 
        (define out (parsed `(try (unparsed ,@try-body) ,@excepts)))
        (values out rest*)]
@@ -394,6 +433,11 @@
      (define body* (expand body body-environment))
      `(class ,name ,super ,body*)]
 
+    [(list 'raise args ...)
+     (define args* (for/list ([arg args])
+                     (expand arg environment)))
+     `(raise ,@args*)]
+
     [(list 'tuple stuff ...)
      (define stuff* (for/list ([x stuff])
                       (expand x environment)))
@@ -424,10 +468,13 @@
          (expand except environment)))
      `(try ,try-block* ,@excepts*)]
 
-    [(list 'except type body)
+    [(list 'except type arg body)
      ;; TODO: handle when except binds a variable
-     (define body* (expand body environment))
-     `(except ,type ,body*)]
+     (define arg* (expand arg environment))
+     (define body-environment (copy-environment environment))
+     (add-lexical! body-environment arg)
+     (define body* (expand body body-environment))
+     `(except ,type ,arg ,body*)]
 
     [(list 'array-splice bottom top)
      (define bottom* (expand bottom environment))
