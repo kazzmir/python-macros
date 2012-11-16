@@ -83,6 +83,9 @@
                             (:: #\" (:* string-character-double) #\")
                             (:: #\' (:* string-character-single) #\')))
 
+(define-lex-abbrev regex (:: #\r
+                            (:: #\" (:* string-character-double) #\")))
+
 (define-lex-abbrev operator (:or "!=" "==" "=" "+" "%" "*" "%" "<" ">" "-"))
 
 (define-lex-abbrev line-comment (:: (:or "#")
@@ -104,6 +107,10 @@
   (lexer-src-pos
     [(eof) (token-eof)]
     [number (token-number (string->number lexeme))]
+    [regex (let ()
+              (define raw (substring (substring lexeme 2)
+                                     0 (- (string-length lexeme) 3)))
+              (token-string (replace-escapes raw)))]
     [identifier (token-identifier (string->symbol lexeme))]
     [space (token-space)]
     [tab (token-tab)]
