@@ -298,6 +298,7 @@
 
       ;; FIXME: hack to support
       ;;   a, b = 1 + 2
+      #;
       [(list (and id1 (? symbol?))
              '%comma
              (and id2 (? symbol?))
@@ -308,6 +309,7 @@
                                     ,right)))
        (values out rest)]
 
+      #;
       [(list (and id1 (? symbol?))
              '%comma
              (and id2 (? symbol?))
@@ -353,7 +355,7 @@
 
       [(list 'print stuff ...)
        (define-values (arg1 rest) (enforest stuff environment))
-       (define out `(call print ,arg1))
+       (define out (parsed `(call print ,arg1)))
        (values out rest)]
       
       [(list (and (? (lambda (i)
@@ -470,6 +472,39 @@
 
 (define (add-lexical! environment name)
   (hash-set! environment name 'lexical))
+
+;; basically just calls parse-all but handles the special case
+;; for multiple assignment
+;;
+;;   self.x, self.y = (1, 2)
+(define (parse-statement statement environment)
+  (define-values (first rest1) (enforest statement environment))
+  (debug "First thing: ~a rest ~a\n" (parsed-data first) rest1)
+  (match rest1
+    [(list '%comma more ...)
+     ;; looks like a multiple assignment
+     ;; what about the case when the right hand side contains a comma?
+     ;;   x = 1, 2
+     ;; i guess this would never happen
+     (let loop ([lefts (list first)]
+                [rest more])
+       (define-values (next rest*)
+                      (enforest rest environment))
+       (debug "Next thing ~a rest: ~a\n" (parsed-data next) rest*)
+       (match rest*
+         [(list '%comma rest2 ...)
+          (loop (cons next lefts) rest2)]
+         [(list)
+           (match (parsed-data next)
+             [(list 'assign next1 right-side)
+              (define all (reverse (cons next1 lefts)))
+              (parsed `(assign ,all ,right-side))]
+             [else
+               (error 'parse-statement "expected a multiple assignment ~a" rest)])]
+         [else (error 'parse-statement "left over tokens for multiple assignment ~a" rest)]
+         ))]
+    [else (parse-all first environment)]))
+     
 
 ;; python ast
 ;;  (import stuff ...)
@@ -619,7 +654,8 @@
      (match stuff
        ;; it might be a list of statements
        [(list (list first ...) rest ...)
-        (define result (parse-all first environment))
+        (define result (parse-statement first environment))
+
         (define out1 (expand (remove-parsed result) environment))
         (define out2 (if (null? rest)
                        '()
