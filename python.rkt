@@ -58,6 +58,15 @@
   (binary-operator 0.9 'left (lambda (left right)
                                (parsed `(op >= ,left ,right)))))
 
+(define python-<=
+  (binary-operator 0.9 'left (lambda (left right)
+                               (parsed `(op <= ,left ,right)))))
+
+(define python-<
+  (binary-operator 0.9 'left (lambda (left right)
+                               (parsed `(op < ,left ,right)))))
+
+
 (define python-==
   (binary-operator 0.2 'left (lambda (left right)
                                (parsed `(op == ,left ,right)))))
@@ -85,6 +94,8 @@
   (add-operator! environment '+ python-+)
   (add-operator! environment '% python-%)
   (add-operator! environment '>= python->=)
+  (add-operator! environment '<= python-<=)
+  (add-operator! environment '< python-<)
   (add-operator! environment '+= python-+=)
   (add-operator! environment 'and python-and)
   (add-operator! environment 'in python-in)
@@ -125,15 +136,19 @@
   result)
 
 (define (parse-args args environment)
-  (define-values (arg rest)
-                 (enforest args environment))
-  (match rest
-    [(list '%comma more ...)
-     (cons arg (parse-args more environment))]
-    [(list)
-     (if arg
-       (list arg)
-       '())]))
+  (match args
+    [(list '* more ...)
+     (parse-args more environment)]
+    [else
+     ;; TODO: make an ast with the *
+     (define-values (arg rest)
+                    (enforest args environment))
+     (match rest
+       [(list '%comma more ...)
+        (cons arg (parse-args more environment))]
+       [(list) (if arg
+                 (list arg)
+                 '())])]))
 
 (define (get-args args environment)
   (match args
@@ -175,7 +190,10 @@
   (match rest
     [(list '%comma more ...)
      (cons expr (parse-tuple more environment))]
-    [(list) (list expr)]))
+    [(list)
+     (if expr
+       (list expr)
+       (list))]))
 
 (define (parse-excepts input environment)
   (let loop ([all '()]
@@ -398,7 +416,7 @@
            (values (left current) input)))]
 
       [(list (list '#%braces inside ...) rest ...)
-       (define out `(make-hash ,@inside))
+       (define out (parsed `(call make-hash ,@inside)))
        (parse rest precedence left out)]
 
       [(list (list '#%brackets inside ...) rest ...)
@@ -415,8 +433,8 @@
                (values out rest))))
          (let ()
            ;; TODO: handle list comprehension syntax
-           (define inside* (parse-all inside environment))
-           (define out (parsed `(call python-make-list ,inside*)))
+           (define inside* (parse-args inside environment))
+           (define out (parsed `(call python-make-list ,@inside*)))
            (values (left out) rest)))]
 
 
@@ -486,25 +504,43 @@
      ;; what about the case when the right hand side contains a comma?
      ;;   x = 1, 2
      ;; i guess this would never happen
-     (let loop ([lefts (list first)]
-                [rest more])
-       (define-values (next rest*)
-                      (enforest rest environment))
-       (debug "Next thing ~a rest: ~a\n" (parsed-data next) rest*)
-       (match rest*
-         [(list '%comma rest2 ...)
-          (loop (cons next lefts) rest2)]
-         [(list)
-           (match (parsed-data next)
-             [(list 'assign next1 right-side)
-              (define all (reverse (cons next1 lefts)))
-              (parsed `(assign ,all ,right-side))]
-             [else
-               (error 'parse-statement "expected a multiple assignment ~a" rest)])]
-         [else (error 'parse-statement "left over tokens for multiple assignment ~a" rest)]
-         ))]
-    [else (parse-all first environment)]))
-     
+     (define-values (vars assigned rest)
+                    (let loop ([lefts (list first)]
+                               [rest more])
+                      (define-values (next rest*)
+                                     (enforest rest environment))
+                      (debug "Next thing ~a rest: ~a\n" (parsed-data next) rest*)
+                      (match (parsed-data next)
+                        [(list 'assign _ _)
+                         (values lefts next
+                                 (match rest*
+                                   [(list '%comma rest3 ...) rest3]
+                                   [else rest*]))]
+                        [else
+                          (match rest*
+                            [(list '%comma rest2 ...)
+                             (loop (cons next lefts) rest2)])])))
+
+     (define (parse input)
+       (define-values (arg rest)
+                      (enforest input environment))
+       (match rest
+         [(list '%comma more ...)
+          (cons arg (parse more))]
+         [(list) (if arg
+                   (list arg)
+                   '())]))
+
+     (define more-args (parse rest))
+     (debug "Vars ~a assign ~a more ~a\n"
+            vars (parsed-data assigned) more-args)
+
+     (match (parsed-data assigned)
+       [(list 'assign assign-var right-side)
+        (define all-vars (append vars (list assign-var)))
+        (define all-right (cons right-side more-args))
+        `(assign ,all-vars (call make-tuple ,@all-right))])]
+    [else (parse-all statement environment)]))
 
 ;; python ast
 ;;  (import stuff ...)
