@@ -54,6 +54,12 @@
   (binary-operator 1 'left (lambda (left right)
                                (parsed `(op + ,left ,right)))))
 
+(define python--
+  (binary-operator 1 'left (lambda (left right)
+                             (parsed `(op - ,left ,right)))
+                   (lambda (left)
+                     (parsed `(un-op - ,left)))))
+
 (define python-%
   (binary-operator 2 'left (lambda (left right)
                                (parsed `(op % ,left ,right)))))
@@ -96,6 +102,7 @@
   (add-operator! environment '= python-=)
   (add-operator! environment '== python-==)
   (add-operator! environment '+ python-+)
+  (add-operator! environment '- python--)
   (add-operator! environment '% python-%)
   (add-operator! environment '>= python->=)
   (add-operator! environment '<= python-<=)
@@ -153,6 +160,16 @@
        [(list) (if arg
                  (list arg)
                  '())])]))
+
+(define (parse-comma-expressions args environment)
+  (define-values (arg rest)
+                 (enforest args environment))
+  (match rest
+    [(list '%comma more ...)
+     (cons arg (parse-args more environment))]
+    [(list) (if arg
+              (list arg)
+              '())]))
 
 (define (get-args args environment)
   (match args
@@ -341,6 +358,11 @@
        (define out (parsed `(class ,name ,super (unparsed ,@body))))
        (values out rest)]
 
+      [(list 'assert stuff ...)
+       (define asserts (parse-comma-expressions stuff environment))
+       (define out (parsed `(assert ,@asserts)))
+       (values out '())]
+
       [(list 'for for-stuff ...)
        (if current
          (let ()
@@ -523,6 +545,11 @@
        (if current
          (values (left current) input)
          (let ()
+           (define args (parse-comma-expressions stuff environment))
+           (define out (parsed `(return ,@args)))
+           (values out '()))
+         #;
+         (let ()
            (define-values (returned rest)
                           (enforest stuff environment))
            (define out (parsed `(return ,returned)))
@@ -637,6 +664,11 @@
            (expand left environment)]))
 
      `(assign ,left* ,right*)]
+
+    [(list 'assert asserts ...)
+     (define asserts* (for/list ([assert asserts])
+                        (expand assert environment)))
+     `(assert ,@asserts*)]
 
     [(list 'op op left right)
      (define left* (expand left environment))
@@ -763,9 +795,10 @@
      (add-lexical! environment what)
      tree]
 
-    [(list 'return what)
-     (define out* (expand what environment))
-     `(return ,out*)]
+    [(list 'return what ...)
+     (define what* (for/list ([what what])
+                     (expand what environment)))
+     `(return ,@what*)]
 
     [(list 'unparsed stuff ...)
      (match stuff
