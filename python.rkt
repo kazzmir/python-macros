@@ -8,6 +8,7 @@
 
 (struct parsed (data) #:transparent)
 (struct operator (precedence association binary unary postfix?) #:transparent)
+(struct python-macro (transformer) #:transparent)
 
 (define (binary-operator precedence association binary [unary #f] [postfix? #f])
     (operator precedence association binary unary postfix?))
@@ -53,6 +54,10 @@
 (define python-+
   (binary-operator 1 'left (lambda (left right)
                                (parsed `(op + ,left ,right)))))
+
+(define python-*
+  (binary-operator 2 'left (lambda (left right)
+                               (parsed `(op * ,left ,right)))))
 
 (define python--
   (binary-operator 1 'left (lambda (left right)
@@ -110,6 +115,7 @@
   (add-operator! environment '== python-==)
   (add-operator! environment '!= python-!=)
   (add-operator! environment '+ python-+)
+  (add-operator! environment '* python-*)
   (add-operator! environment '- python--)
   (add-operator! environment '% python-%)
   (add-operator! environment '>= python->=)
@@ -302,6 +308,9 @@
      `(generator-if ,args ,left ,expr ,condition)]
     [(list) `(generator ,args ,left ,expr)]))
 
+(define (is-python-macro? what environment)
+  (python-macro? (environment-value environment what)))
+
 (define (enforest input environment)
   (define (parse input precedence left current)
 
@@ -345,8 +354,22 @@
       [(struct parsed (what))
        (values (left input) #f)]
 
+      [(list (and p (struct parsed (what))) rest ...)
+       (if current
+         (left current)
+         (parse rest precedence left p))]
+
       [(list '%colon rest ...)
        (values (left current) input)]
+
+      [(list (and macro (? (lambda (i)
+                             (is-python-macro? i environment))))
+             rest ...)
+       (debug "Macro ~a\n" macro)
+       (define transformer (python-macro-transformer (environment-value environment macro)))
+       (define-values (output unparsed) (transformer rest environment))
+       (values (parse-all output environment)
+               unparsed)]
 
       [(list 'def (and name (? symbol?))
              (list '#%parens args ...) '%colon
@@ -383,6 +406,13 @@
                          (enforest stuff environment))
           (define out (parsed `(lambda ,args ,expr)))
           (values out rest2)])]
+
+      [(list 'macro name (list '#%braces pattern ...)
+             '%colon
+             (list '%block body ...)
+             rest ...)
+       (define out (parsed `(macro ,name ,pattern ,body)))
+       (values out rest)]
 
       [(list 'del stuff ...)
        (define exprs (parse-comma-expressions stuff environment))
@@ -646,6 +676,9 @@
 (define (add-lexical! environment name)
   (hash-set! environment name 'lexical))
 
+(define (add-macro! environment name macro)
+  (hash-set! environment name macro))
+
 ;; basically just calls parse-all but handles the special case
 ;; for multiple assignment
 ;;
@@ -705,6 +738,14 @@
         `(assign ,all-vars (call make-tuple ,@all-right))])]
     [else (parse-all statement environment)])]))
 
+(define (make-macro)
+  (python-macro (lambda (stx environment)
+                  (match stx
+                    [(list (list '#%parens body ...) rest ...)
+                     (debug "Macro input body ~a\n" body)
+                     (define expr (parse-all body environment))
+                     (values `(1 + ,expr) rest)]))))
+
 ;; python ast
 ;;  (import stuff ...)
 ;;  (class name super stuff ...)
@@ -741,6 +782,10 @@
      (define asserts* (for/list ([assert asserts])
                         (expand assert environment)))
      `(assert ,@asserts*)]
+
+    [(list 'macro name pattern body)
+     (add-macro! environment name (make-macro))
+     tree]
 
     [(list 'op op left right)
      (define left* (expand left environment))
