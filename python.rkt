@@ -76,6 +76,13 @@
   (binary-operator 0.9 'left (lambda (left right)
                                (parsed `(op < ,left ,right)))))
 
+(define python->
+  (binary-operator 0.9 'left (lambda (left right)
+                               (parsed `(op > ,left ,right)))))
+
+(define python-!=
+  (binary-operator 0.2 'left (lambda (left right)
+                               (parsed `(op != ,left ,right)))))
 
 (define python-==
   (binary-operator 0.2 'left (lambda (left right)
@@ -101,12 +108,14 @@
   (define environment (make-hash))
   (add-operator! environment '= python-=)
   (add-operator! environment '== python-==)
+  (add-operator! environment '!= python-!=)
   (add-operator! environment '+ python-+)
   (add-operator! environment '- python--)
   (add-operator! environment '% python-%)
   (add-operator! environment '>= python->=)
   (add-operator! environment '<= python-<=)
   (add-operator! environment '< python-<)
+  (add-operator! environment '> python->)
   (add-operator! environment '+= python-+=)
   (add-operator! environment 'and python-and)
   (add-operator! environment 'in python-in)
@@ -171,16 +180,19 @@
               (list arg)
               '())]))
 
-(define (get-args args environment)
-  (match args
-    [(list) '()]
-    [(list '%comma rest ...) (get-args rest environment)]
-    [(list (and id (? symbol?)) '= more ...)
-     (define-values (expr rest) (enforest more environment))
-     ;; TODO: handle expr
-     (cons id (get-args rest environment))]
-    [(list (and id (? symbol?)) rest ...)
-     (cons id (get-args rest environment))]))
+(define (get-args input environment)
+  (let loop ([args '()]
+             [rest input])
+    (match rest
+      [(list) (values (reverse args) rest)]
+      [(list '%comma rest2 ...) (loop args rest2)]
+      [(list '%colon rest2 ...) (values (reverse args) rest)]
+      [(list (and id (? symbol?)) '= more ...)
+       (define-values (expr rest2) (enforest more environment))
+       ;; TODO: handle expr
+       (loop (cons id args) rest2)]
+      [(list (and id (? symbol?)) rest2 ...)
+       (loop (cons id args) rest2)])))
 
 ;; could be just a plain expression or an array splicing operation
 (define (parse-list-ref stuff environment)
@@ -340,7 +352,7 @@
              (list '#%parens args ...) '%colon
              (list '%block body ...)
              rest ...)
-       (define real-args (get-args args environment))
+       (define-values (real-args rest-ignore) (get-args args environment))
        (define out (parsed `(def ,name ,real-args (unparsed ,@body))))
        (values out rest)]
 
@@ -358,6 +370,20 @@
        (define out (parsed `(class ,name ,super (unparsed ,@body))))
        (values out rest)]
 
+      [(list 'lambda stuff ...)
+       (define-values (args rest) (get-args stuff environment))
+       (match rest
+         ;; lambda might have a block or just a single expression
+         [(list '%colon (list '%block inside ...) rest2 ...)
+          (define expr (parse-all inside environment))
+          (define out (parsed `(lambda ,args ,expr)))
+          (values out rest2)]
+         [(list '%colon stuff ...)
+          (define-values (expr rest2)
+                         (enforest stuff environment))
+          (define out (parsed `(lambda ,args ,expr)))
+          (values out rest2)])]
+
       [(list 'assert stuff ...)
        (define asserts (parse-comma-expressions stuff environment))
        (define out (parsed `(assert ,@asserts)))
@@ -369,6 +395,37 @@
            (define out (parse-generator-form for-stuff (left current) environment))
            (values (parsed out) '()))
          (let ()
+           (define-values (ids rest)
+                          (let loop ([ids '()]
+                                     [rest for-stuff])
+                            (match rest
+                              [(list 'in more ...)
+                               (values (reverse ids) more)]
+                              [(list '%comma more ...)
+                               (loop ids more)]
+                              [(list (and id (? symbol?)) more ...)
+                               (loop (cons id ids) more)])))
+
+           (define-values (exprs rest2)
+                          (let loop ([exprs '()]
+                                     [rest2 rest])
+                            (match rest2
+                              [(list '%colon more ...)
+                               (values (reverse exprs) more)]
+                              [(list '%comma more ...)
+                               (loop exprs more)]
+                              [else
+                                (define-values (expr1 rest*)
+                                               (enforest rest2 environment))
+                                (loop (cons expr1 exprs) rest*)])))
+
+           (match rest2
+             [(list (list '%block body ...) rest3 ...)
+              (define out (parsed `(for ,ids (call make-tuple ,@exprs)
+                                     (unparsed ,@body))))
+              (values out rest3)])
+
+             #;
            (match for-stuff
              ;; todo: generalize these to infinite identifiers
              [(list (and iterator (? symbol?)) 'in more ...)
@@ -827,6 +884,14 @@
                      'lexical))
        (error 'expand "unbound identifier ~a" id))
      id]
+
+    [(list 'lambda (list args ...) expr)
+     (debug "Expand lambda expr ~a\n" expr)
+     (define lambda-environment (copy-environment environment))
+     (for ([arg args])
+       (add-lexical! lambda-environment arg))
+     (define expr* (expand expr lambda-environment))
+     `(lambda (,@args) ,expr*)]
 
     [(list 'def name (list args ...) body)
      (debug "Expand def body ~a\n" body)
