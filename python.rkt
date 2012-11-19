@@ -384,6 +384,11 @@
           (define out (parsed `(lambda ,args ,expr)))
           (values out rest2)])]
 
+      [(list 'del stuff ...)
+       (define exprs (parse-comma-expressions stuff environment))
+       (define out (parsed `(del ,@exprs)))
+       (values out '())]
+
       [(list 'assert stuff ...)
        (define asserts (parse-comma-expressions stuff environment))
        (define out (parsed `(assert ,@asserts)))
@@ -522,9 +527,11 @@
        (define out (parsed `(try (unparsed ,@try-body) ,@excepts)))
        (values out rest*)]
 
-      [(list 'import (and name (? symbol?)) rest ...)
-       (define out (parsed `(import ,name)))
-       (values out rest)]
+      [(list 'import import-stuff ...)
+       ;; TODO: handle imports..
+       (define names '())
+       (define out (parsed `(import ,@names)))
+       (values out '())]
 
       [(list 'from (and name (? symbol?)) 'import stuff ...)
        (match stuff
@@ -646,12 +653,20 @@
 (define (parse-statement statement environment)
   (define-values (first rest1) (enforest statement environment))
   (debug "First thing: ~a rest ~a\n" first rest1)
+  (match (parsed-data first)
+    [(list 'assign left right)
+     (match rest1
+       [(list) first]
+       [(list '%comma more ...)
+        (define more-exprs (parse-comma-expressions more environment))
+        `(assign ,left (call make-tuple ,right ,@more-exprs))])]
+    [else 
   (match rest1
     [(list '%comma more ...)
      ;; looks like a multiple assignment
      ;; what about the case when the right hand side contains a comma?
      ;;   x = 1, 2
-     ;; i guess this would never happen
+     
      (define-values (vars assigned rest)
                     (let loop ([lefts (list first)]
                                [rest more])
@@ -688,7 +703,7 @@
         (define all-vars (append vars (list assign-var)))
         (define all-right (cons right-side more-args))
         `(assign ,all-vars (call make-tuple ,@all-right))])]
-    [else (parse-all statement environment)]))
+    [else (parse-all statement environment)])]))
 
 ;; python ast
 ;;  (import stuff ...)
@@ -735,6 +750,11 @@
     [(list 'un-op op what)
      (define what* (expand what environment))
      `(un-op ,op ,what)]
+
+    [(list 'del exprs ...)
+     (define exprs* (for/list ([expr exprs])
+                      (expand expr environment)))
+     `(del ,@exprs*)]
 
     [(list 'generator args result expr)
      (define generator-environment (copy-environment environment))
@@ -848,8 +868,9 @@
     [(or (? number?)
          (? string?)) tree]
 
-    [(list 'import what)
-     (add-lexical! environment what)
+    [(list 'import whats ...)
+     (for ([what whats])
+       (add-lexical! environment whats))
      tree]
 
     [(list 'return what ...)
