@@ -6,8 +6,8 @@
          racket/match
          racket/cmdline)
 
-(struct parsed (data))
-(struct operator (precedence association binary unary postfix?))
+(struct parsed (data) #:transparent)
+(struct operator (precedence association binary unary postfix?) #:transparent)
 
 (define (binary-operator precedence association binary [unary #f] [postfix? #f])
     (operator precedence association binary unary postfix?))
@@ -34,8 +34,12 @@
 
 
 (define python-in
-  (binary-operator 0.7 'left (lambda (left right)
+  (binary-operator 1.7 'left (lambda (left right)
                                (parsed `(op in ,left ,right)))))
+
+(define python-not-in
+  (binary-operator 1.7 'left (lambda (left right)
+                               (parsed `(un-op not (op in ,left ,right))))))
 
 
 (define python-is
@@ -130,7 +134,7 @@
   (define-values (result rest)
                  (enforest line environment))
   #;
-  (debug "Parse all: result = ~a rest = ~a\n" (parsed-data result) rest)
+  (debug "Parse all: result = ~a rest = ~a\n" result rest)
   (when (and rest (not (null? rest)))
     (error 'parse-all "could not parse entire expression ~a" rest))
   result)
@@ -250,8 +254,64 @@
       [else
         (values (reverse all) input)])))
 
+(define (parse-generator-form stuff left environment)
+  (define-values (args rest)
+                 (let loop ([args '()]
+                            [input stuff])
+                   (match input
+                     [(list 'in more ...)
+                      (values (reverse args) more)]
+                     [(list '%comma more ...)
+                      (loop args more)]
+                     [(list (and id (? symbol?)) more ...)
+                      (loop (cons id args) more)])))
+  (define-values (expr rest2) (enforest rest environment))
+  (match rest2
+    [(list 'if condition-stuff ...)
+     (debug "Generator condition ~a\n" condition-stuff)
+     (define condition (parse-all condition-stuff environment))
+     `(generator-if ,args ,left ,expr ,condition)]
+    [(list) `(generator ,args ,left ,expr)]))
+
 (define (enforest input environment)
   (define (parse input precedence left current)
+
+    (define (handle-operator operator precedence rest left current)
+      (define new-precedence (operator-precedence operator))
+       (define association (operator-association operator))
+       (define binary-transformer (operator-binary operator))
+       (define unary-transformer (operator-unary operator))
+       (define postfix? (operator-postfix? operator))
+       (define higher
+         (case association
+           [(left) >]
+           [(right) >=]))
+
+       (if (higher new-precedence precedence)
+         (let-values ([(parsed unparsed)
+                       (parse rest new-precedence
+                              (lambda (stuff)
+                                (define right (parse-all stuff environment))
+                                (define output
+                                  (if current
+                                    (if binary-transformer
+                                      (binary-transformer (parse-all current environment) right)
+                                      (if (and postfix? unary-transformer)
+                                        (unary-transformer (list current))
+                                        (error 'binary "cannot be used as a binary operator in ~a" operator)))
+                                    (if unary-transformer
+                                      (unary-transformer right)
+                                      (error 'unary "cannot be used as a unary operator in ~a" operator))))
+
+                                output)
+                              #f)])
+           (parse unparsed precedence left parsed))
+         (if unary-transformer
+           (if current
+             (values (left current) input)
+             (error 'low-precedence-unary "implement"))
+           (values (left current) input))))
+
     (match input
       [(struct parsed (what))
        (values (left input) #f)]
@@ -281,6 +341,32 @@
        (define out (parsed `(class ,name ,super (unparsed ,@body))))
        (values out rest)]
 
+      [(list 'for for-stuff ...)
+       (if current
+         (let ()
+           (define out (parse-generator-form for-stuff (left current) environment))
+           (values (parsed out) '()))
+         (let ()
+           (match for-stuff
+             ;; todo: generalize these to infinite identifiers
+             [(list (and iterator (? symbol?)) 'in more ...)
+              (define-values (stuff rest1) (enforest more environment))
+              (match rest1
+                [(list '%colon (list '%block body ...) rest2 ...)
+                 (define out (parsed `(for (,iterator) ,stuff (unparsed ,@body))))
+                 (values out rest2)])]
+             [(list
+                (and iterator1 (? symbol?)) '%comma
+                (and iterator2 (? symbol?))
+                'in more ...)
+              (define-values (stuff rest1) (enforest more environment))
+              (match rest1
+                [(list '%colon (list '%block body ...) rest2 ...)
+                 (define out (parsed `(for (,iterator1 ,iterator2) ,stuff (unparsed ,@body))))
+                 (values out rest2)])])))]
+
+
+      #;
       [(list 'for (and iterator (? symbol?)) 'in more ...)
        (define-values (stuff rest1) (enforest more environment))
        (match rest1
@@ -288,6 +374,7 @@
           (define out (parsed `(for (,iterator) ,stuff (unparsed ,@body))))
           (values out rest2)])]
 
+      #;
       [(list 'for
              (and iterator1 (? symbol?)) '%comma
              (and iterator2 (? symbol?))
@@ -300,14 +387,17 @@
 
 
       [(list 'if more ...)
-       (debug "If\n")
-       (define-values (condition rest1) (enforest more environment))
-       (match rest1
-         [(list '%colon (list '%block inside ...) rest2 ...)
-          (define-values (elses rest3) (parse-elses rest2 environment))
-          (debug "Enforest elses ~a\n" elses)
-          (define out (parsed `(if ,condition (unparsed ,@inside) ,elses)))
-          (values out rest3)])]
+       (if current
+         (values (left current) input)
+         (let ()
+           (debug "If\n")
+           (define-values (condition rest1) (enforest more environment))
+           (match rest1
+             [(list '%colon (list '%block inside ...) rest2 ...)
+              (define-values (elses rest3) (parse-elses rest2 environment))
+              (debug "Enforest elses ~a\n" elses)
+              (define out (parsed `(if ,condition (unparsed ,@inside) ,elses)))
+              (values out rest3)])))]
 
       [(list 'raise more ...)
        (define-values (args rest) (parse-raise more environment))
@@ -371,49 +461,21 @@
            (values out #f)]
          [else (error 'enforest "handle from ... import ...")])]
 
+      ;; print is a special form in python
       [(list 'print stuff ...)
        (define-values (arg1 rest) (enforest stuff environment))
        (define out (parsed `(call print ,arg1)))
        (values out rest)]
+
+      ;; hack for wierd 'not in' binary operator
+      [(list 'not 'in rest ...)
+       (handle-operator python-not-in precedence rest left current)]
       
       [(list (and (? (lambda (i)
                        (is-operator? i environment)))
                   operator-symbol) rest ...)
        (define operator (environment-value environment operator-symbol))
-       (define new-precedence (operator-precedence operator))
-       (define association (operator-association operator))
-       (define binary-transformer (operator-binary operator))
-       (define unary-transformer (operator-unary operator))
-       (define postfix? (operator-postfix? operator))
-       (define higher
-         (case association
-           [(left) >]
-           [(right) >=]))
-
-       (if (higher new-precedence precedence)
-         (let-values ([(parsed unparsed)
-                       (parse rest new-precedence
-                              (lambda (stuff)
-                                (define right (parse-all stuff environment))
-                                (define output
-                                  (if current
-                                    (if binary-transformer
-                                      (binary-transformer (parse-all current environment) right)
-                                      (if (and postfix? unary-transformer)
-                                        (unary-transformer (list current))
-                                        (error 'binary "cannot be used as a binary operator in ~a" operator)))
-                                    (if unary-transformer
-                                      (unary-transformer right)
-                                      (error 'unary "cannot be used as a unary operator in ~a" operator))))
-
-                                output)
-                              #f)])
-           (parse unparsed precedence left parsed))
-         (if unary-transformer
-           (if current
-             (values (left current) input)
-             (error 'low-precedence-unary "implement"))
-           (values (left current) input)))]
+       (handle-operator operator precedence rest left current)]
 
       [(list (list '#%braces inside ...) rest ...)
        (define out (parsed `(call make-hash ,@inside)))
@@ -439,7 +501,9 @@
 
 
        [(list (list '#%parens args ...) more ...)
-        (debug "Maybe function call with ~a at ~a\n" current precedence)
+        (debug "Maybe function call with ~a at ~a\n"
+               current
+               precedence)
         (if current 
           (if (> precedence function-call-precedence)
             (let ()
@@ -497,7 +561,7 @@
 ;;   self.x, self.y = (1, 2)
 (define (parse-statement statement environment)
   (define-values (first rest1) (enforest statement environment))
-  (debug "First thing: ~a rest ~a\n" (parsed-data first) rest1)
+  (debug "First thing: ~a rest ~a\n" first rest1)
   (match rest1
     [(list '%comma more ...)
      ;; looks like a multiple assignment
@@ -509,7 +573,7 @@
                                [rest more])
                       (define-values (next rest*)
                                      (enforest rest environment))
-                      (debug "Next thing ~a rest: ~a\n" (parsed-data next) rest*)
+                      (debug "Next thing ~a rest: ~a\n" next rest*)
                       (match (parsed-data next)
                         [(list 'assign _ _)
                          (values lefts next
@@ -533,7 +597,7 @@
 
      (define more-args (parse rest))
      (debug "Vars ~a assign ~a more ~a\n"
-            vars (parsed-data assigned) more-args)
+            vars assigned more-args)
 
      (match (parsed-data assigned)
        [(list 'assign assign-var right-side)
@@ -582,6 +646,23 @@
     [(list 'un-op op what)
      (define what* (expand what environment))
      `(un-op ,op ,what)]
+
+    [(list 'generator args result expr)
+     (define generator-environment (copy-environment environment))
+     (for ([arg args])
+       (add-lexical! generator-environment arg))
+     (define result* (expand result generator-environment))
+     (define expr* (expand expr generator-environment))
+     `(generator ,args ,result* ,expr*)]
+
+    [(list 'generator-if args result expr condition)
+     (define generator-environment (copy-environment environment))
+     (for ([arg args])
+       (add-lexical! generator-environment arg))
+     (define result* (expand result generator-environment))
+     (define expr* (expand expr generator-environment))
+     (define condition* (expand condition generator-environment))
+     `(generator ,args ,result* ,expr* ,condition*)]
 
     [(list 'class name super body)
      (add-lexical! environment name)
