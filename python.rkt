@@ -311,6 +311,20 @@
 (define (is-python-macro? what environment)
   (python-macro? (environment-value environment what)))
 
+(define (parse-hash stuff environment)
+  (define-values (first rest) (enforest stuff environment))
+  (match rest
+    [(list '%colon more ...)
+     (define-values (next rest2) (enforest more environment))
+
+     (define tuple `(call make-tuple ,first ,next))
+
+     (match rest2
+       [(list '%comma rest3 ...)
+        (cons tuple (parse-hash rest3 environment))]
+       [(list) (list tuple)])]
+    [(list) (list)]))
+
 (define (enforest input environment)
   (define (parse input precedence left current)
 
@@ -594,7 +608,8 @@
        (handle-operator operator precedence rest left current)]
 
       [(list (list '#%braces inside ...) rest ...)
-       (define out (parsed `(call make-hash ,@inside)))
+       (define exprs (parse-hash inside environment))
+       (define out (parsed `(call make-hash ,@exprs)))
        (parse rest precedence left out)]
 
       [(list (list '#%brackets inside ...) rest ...)
